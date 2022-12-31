@@ -43,17 +43,9 @@ class CNNRNNGenerator(Generator, keras.utils.Sequence):
                  height=224,
                  source_path=r"D:\DDownloads\UpGrad\NeuralNetwork\CaseStudy\Project_data\train",
                  batch_size=30,
-<<<<<<< HEAD
                  dataCSV=r"D:\DDownloads\UpGrad\NeuralNetwork\CaseStudy\Project_data\train.csv",
                  numClasses=5,
                  numFeatures=2048,  # as per inception-v3
-=======
-                 trainCSV=r"D:\DDownloads\UpGrad\NeuralNetwork\CaseStudy\Project_data\train.csv",
-                 valCSV=r"D:\DDownloads\UpGrad\NeuralNetwork\CaseStudy\Project_data\val.csv",
-                 numClasses=5,
-                 numFeatures=2048,
-                 trainOrVal="train"
->>>>>>> 85382b549b5df1d0b963660c797a415b5e1e931a
                  ):
         super().__init__()
         # Shuffle the data and store in a list
@@ -63,7 +55,6 @@ class CNNRNNGenerator(Generator, keras.utils.Sequence):
         self.width = width
         self.height = height
         self.source_path = source_path
-<<<<<<< HEAD
         self.dataCSV = dataCSV
         self.numClasses = numClasses
         self.numFeatures = numFeatures
@@ -72,21 +63,6 @@ class CNNRNNGenerator(Generator, keras.utils.Sequence):
 
         # Get vector list
         self.vectorList = np.random.permutation(self.data_doc)
-=======
-        self.trainCSV = trainCSV
-        self.valCSV = valCSV
-        self.numClasses = numClasses
-        self.numFeatures = numFeatures
-
-        self.train_doc = np.random.permutation(open(self.trainCSV).readlines())
-        self.val_doc = np.random.permutation(open(self.valCSV).readlines())
-
-        # Get vector list
-        if trainOrVal == "train":
-            self.vectorList = np.random.permutation(self.train_doc)
-        else:
-            self.vectorList = np.random.permutation(self.val_doc)
->>>>>>> 85382b549b5df1d0b963660c797a415b5e1e931a
         self.numVideos = len(self.vectorList)
         self.remBatchSize = self.numVideos % self.batch_size
         self.numBatches = ceil(self.numVideos / self.batch_size)
@@ -170,7 +146,6 @@ class CNNRNNGenerator(Generator, keras.utils.Sequence):
     def __len__(self):
         return self.numBatches
 
-<<<<<<< HEAD
     # Get one batch of data. Needed as we are inheriting from keras.utils.Sequence
 
     # Iterate over batches. next(generator) will not be called during model.fit. __getitem__ gets called
@@ -182,22 +157,6 @@ class CNNRNNGenerator(Generator, keras.utils.Sequence):
         return batch_data, batch_labels
 
     # Keeping this for debugging purposes. Not really needed, was used to test next(generator)
-=======
-        # Get one batch of data. Needed as we are inheriting from keras.utils.Sequence
-
-    def __getitem__(self, batchIdx):
-        batch_data = None
-        batch_labels = None
-        if batchIdx < (self.numVideos // self.batch_size):
-            batch_data, batch_labels = self.getBatchData(batchIdx, self.batch_size)
-        else:
-            batch_data, batch_labels = self.getBatchData(batchIdx, self.remBatchSize)
-        return batch_data, batch_labels
-
-        # Iterate over batches. next(generator) will not be called during model.fit. __getitem__ gets called. Keeping
-        # this for debugging purposes
-
->>>>>>> 85382b549b5df1d0b963660c797a415b5e1e931a
     def __next__(self):
         batch_data = None
         batch_labels = None
@@ -214,7 +173,6 @@ class CNNRNNGenerator(Generator, keras.utils.Sequence):
 ## Model utilities
 
 def get_rnn_model(numFrames=30, numFeatures=2048):
-<<<<<<< HEAD
     frame_features_input = keras.Input(shape=(numFrames, numFeatures))
     x = GRU(16, return_sequences=True)(frame_features_input)
     x = GRU(8, return_sequences=True)(x)
@@ -222,13 +180,6 @@ def get_rnn_model(numFrames=30, numFeatures=2048):
     x = Dense(64, activation="relu")(x)  # Adding one dense layer
     dense = Dense(5, activation="softmax")
     outputs = TimeDistributed(dense)(x)
-=======
-    frame_features_input = keras.Input(shape=(30, 2048))
-    x = keras.layers.GRU(8, return_sequences=True)(frame_features_input)
-    x = keras.layers.GRU(16, return_sequences=True)(x)
-    dense = keras.layers.Dense(5, activation="softmax")
-    outputs = keras.layers.TimeDistributed(dense)(x)
->>>>>>> 85382b549b5df1d0b963660c797a415b5e1e931a
     rnn_model = keras.Model(inputs=frame_features_input, outputs=outputs)
     rnn_model.compile(loss="categorical_crossentropy", optimizer="adam", metrics=["accuracy"])
     return rnn_model
@@ -269,12 +220,8 @@ if __name__ == "__main__":
     train_gen = CNNRNNGenerator(frameIdxList=frameIdxList, batch_size=batch_size)
     train_gen.initializeFeatureExtractor()
     val_path = r"D:\DDownloads\UpGrad\NeuralNetwork\CaseStudy\Project_data\val"
-<<<<<<< HEAD
     val_csv = r"D:\DDownloads\UpGrad\NeuralNetwork\CaseStudy\Project_data\val.csv"
     val_gen = CNNRNNGenerator(frameIdxList=frameIdxList, source_path=val_path, batch_size=batch_size, dataCSV=val_csv)
-=======
-    val_gen = CNNRNNGenerator(frameIdxList=frameIdxList, source_path=val_path, batch_size=batch_size, trainOrVal="val")
->>>>>>> 85382b549b5df1d0b963660c797a415b5e1e931a
     val_gen.initializeFeatureExtractor()
 
     # Model
