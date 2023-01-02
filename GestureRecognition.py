@@ -277,6 +277,139 @@ class Conv3DGenerator(Generator):
         return batch_data, batch_labels
 
 
+class OpticalFlowGenerator(Generator):
+    def __init__(self,
+                 frameIdxList,
+                 width=224,
+                 height=224,
+                 source_path=r"D:\DDownloads\UpGrad\NeuralNetwork\CaseStudy\Project_data\train",
+                 batch_size=30,
+                 dataCSV=r"D:\DDownloads\UpGrad\NeuralNetwork\CaseStudy\Project_data\train.csv",
+                 numClasses=5,
+                 useVectorList=False,
+                 vectorList=None):
+        super().__init__()
+        # Shuffle the data and store in a list
+        self.frameIdxList = frameIdxList
+        self.numFramesInVideo = len(frameIdxList)
+        self.batch_size = batch_size
+        self.width = width
+        self.height = height
+
+        self.source_path = source_path
+        self.dataCSV = dataCSV
+        self.numClasses = numClasses
+        self.data_doc = np.random.permutation(open(self.dataCSV).readlines())
+
+        # Get vector list
+        if useVectorList:
+            self.vectorList = vectorList
+        else:
+            self.vectorList = np.random.permutation(self.data_doc)
+        self.numVideos = len(self.vectorList)
+        self.remBatchSize = self.numVideos % self.batch_size
+        self.numBatches = ceil(self.numVideos / self.batch_size)
+        self.currBatchIdx = 0
+        self.numChannels = 3
+
+    def getNumBatches(self):
+        return self.numBatches
+
+    def __len__(self):
+        return self.numBatches
+
+    def draw_flow(self, img, flow, step=16):
+        h, w = img.shape[:2]
+        y, x = np.mgrid[step / 2:h:step, step / 2:w:step].reshape(2, -1).astype(int)
+        fx, fy = flow[y, x].T
+
+        lines = np.vstack([x, y, x - fx, y - fy]).T.reshape(-1, 2, 2)
+        lines = np.int32(lines + 0.5)
+
+        img_bgr = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+        cv2.polylines(img_bgr, lines, 0, (0, 255, 0))
+
+        for (x1, y1), (_x2, _y2) in lines:
+            cv2.circle(img_bgr, (x1, y1), 1, (0, 255, 0), -1)
+
+        return img_bgr
+
+    def getOFOutput(self, currFramePath, nextFramePath):
+        # Read images
+        currFrame = cv2.imread(currFramePath)
+        nextFrame = cv2.imread(nextFramePath)
+
+        # Resize to an agreed upon size(Inception wants 224, 224)
+        resizedCurrentFrame = cv2.resize(currFrame, (self.width, self.height), interpolation=cv2.INTER_AREA)
+        resizedNextFrame = cv2.resize(nextFrame, (self.width, self.height), interpolation=cv2.INTER_AREA)
+
+        # Get the gray versions
+        currFrameGray = cv2.cvtColor(resizedCurrentFrame, cv2.COLOR_BGR2GRAY)
+        nextFrameGray = cv2.cvtColor(resizedNextFrame, cv2.COLOR_BGR2GRAY)
+
+        flow = cv2.calcOpticalFlowFarneback(prev=currFrameGray, next=nextFrameGray, flow=None, pyr_scale=0.5,
+                                            levels=3, winsize=15, iterations=3, poly_n=5, poly_sigma=1.2, flags=0)
+        return flow
+
+    def getBatchData(self, batch, currBatchSize):
+        # The input to Conv3d will be the flow output of each frame
+        # The last dim is 2 because flow is a vector of dx/dt, dy/dt
+        batch_data = np.zeros((self.batch_size, self.numFramesInVideo - 1, self.width, self.height, 2))
+        batch_labels = np.zeros((self.batch_size, self.numClasses))
+        for batchIdx in range(currBatchSize):
+            # Get the vector name (or directory name)
+            unprocessedCurrVectorString = self.vectorList[batchIdx + (batch * self.batch_size)].strip()
+            vectorName = unprocessedCurrVectorString.split(";")[0]
+            # Store vector path
+            vectorDir = self.source_path + "\\" + vectorName
+
+            # List all the frames within the directory(vectorName). # Read each image one by one
+            allFrames = os.listdir(vectorDir)
+
+            # videoData has all the images' flow outputs
+            videoData = np.zeros((self.numFramesInVideo - 1, self.width, self.height,
+                                  2))  # The last dim is 2 because flow is a vector of dx/dt, dy/dt
+
+            # Current video's frames loop
+            frameIdx = 0
+            while frameIdx < (
+                    self.numFramesInVideo - 1):  # Flow will have one less frame since it needs (prev, next) pairs
+                # Get path of current frame using frameIdx
+                currentFrame = vectorDir + "\\" + allFrames[frameIdx]
+
+                # Get path of next frame using frameIdx
+                nextFramePath = vectorDir + "\\" + allFrames[frameIdx + 1]
+
+                flow = self.getOFOutput(currFramePath=currentFrame, nextFramePath=nextFramePath)
+                videoData[frameIdx,] = flow
+                frameIdx += 1
+            batch_data[batchIdx,] = videoData
+            # Set the corresponding class' index to 1: One hot encoding
+            batch_labels[batchIdx, int(unprocessedCurrVectorString.split(";")[2])] = 1
+        return batch_data, batch_labels
+
+    # Iterate over batches. next(generator) will not be called during model.fit. __getitem__ gets called
+    def __getitem__(self, batchIdx):
+        # Adjusting batch size as per batchIdx. Remember the last batch may not have enough data to be equal to
+        # numVideos/batch_size, it will be equal to numVideos % batch_size.
+        currBatchSize = self.batch_size if batchIdx < (self.numVideos // self.batch_size) else self.remBatchSize
+        batch_data, batch_labels = self.getBatchData(batchIdx, currBatchSize)
+        return batch_data, batch_labels
+
+    # Keeping this for debugging purposes. Not really needed, was used to test: next(generator)
+    def __next__(self):
+        batch_data = None
+        batch_labels = None
+        print(self.currBatchIdx)
+        if self.currBatchIdx < self.__len__():
+            batch_data, batch_labels = self.__getitem__(self.currBatchIdx)
+            self.currBatchIdx += 1
+        else:
+            self.currBatchIdx = 0
+            batch_data, batch_labels = self.__getitem__(self.currBatchIdx)
+        return batch_data, batch_labels
+
+
 ## Model utilities
 ## -- rnn -- ##
 def get_rnn_model(numFrames=30, numFeatures=2048):
@@ -315,15 +448,14 @@ def create_model_dir():
 ## -- rnn  end-- ##
 
 ## -- Conv3d -- ##
-def get_conv3d_model(numFeaturesInFirstLayer, numFrames, output_activation="softmax",
-                     width=224, height=224, numChannels=3,
+def get_conv3d_model(numFeaturesInFirstLayer, numFrames, input_shape, output_activation="softmax",
                      numClasses=5, numNeuronsInDenseLayer=256):
     # Model
     model = models.Sequential()
 
     # Convolution layer with `numFeaturesInFirstLayer` features, 3x3 filter and a relu activation with 2x2 pooling
     model.add(layers.Conv3D(numFeaturesInFirstLayer, (3, 3, 3), padding='same', activation='relu',
-                            input_shape=(numFrames, width, height, numChannels)))
+                            input_shape=(numFrames, input_shape[0], input_shape[1], input_shape[2])))
     model.add(layers.MaxPooling3D())
 
     # Convolution layer with `numFeaturesInFirstLayer * 2` features, 3x3 filter and relu activation with 2x2 pooling
@@ -353,10 +485,10 @@ def get_conv3d_model(numFeaturesInFirstLayer, numFrames, output_activation="soft
 
 def get_conv3d_callbacks():
     curr_dt_time = datetime.datetime.now()
-    model_name = r"conv3d\conv3d_init" + '_' + str(curr_dt_time).replace(' ', '').replace(':', '_') + '\\'
+    model_name = r"conv3d_of\conv3d_init" + '_' + str(curr_dt_time).replace(' ', '').replace(':', '_') + '\\'
     currDir = os.getcwd()
-    if not os.path.exists(currDir + "\\" + "conv3d"):
-        os.mkdir(currDir + "\\" + "conv3d")
+    if not os.path.exists(currDir + "\\" + "conv3d_of"):
+        os.mkdir(currDir + "\\" + "conv3d_of")
 
     modelPath = currDir + "\\" + model_name
     if not os.path.exists(modelPath):
@@ -364,11 +496,11 @@ def get_conv3d_callbacks():
 
     filepath = modelPath + 'conv3d-{epoch:05d}-{loss:.5f}-{categorical_accuracy:.5f}-{val_loss:.5f}-{val_categorical_accuracy:.5f}.h5'
     # val_loss
-    checkpoint = ModelCheckpoint(filepath, monitor='val_categorical_accuracy', verbose=1,
+    checkpoint = ModelCheckpoint(filepath, monitor='val_loss', verbose=1,
                                  save_best_only=True, save_weights_only=False,
                                  mode='auto', period=1)
     LR = ReduceLROnPlateau(monitor='val_loss', factor=0.1, patience=2,
-                           min_lr=1e-4)  # write the REducelronplateau code here
+                           min_lr=1e-4)  # write the Reducelronplateau code here
     return [checkpoint, LR]
     # return [LR]
 
@@ -384,13 +516,17 @@ def driver():
     nClasses = 5
     output_activation = "softmax"
     batch_size = 10
-    num_epochs = 20
+    num_epochs = 10
 
     val_path = r"D:\DDownloads\UpGrad\NeuralNetwork\CaseStudy\Project_data\val"
     val_csv = r"D:\DDownloads\UpGrad\NeuralNetwork\CaseStudy\Project_data\val.csv"
 
     ## Type of model: Modify this.
-    modelType = "conv3d"
+    # modelType = "conv3d"
+    # modelType = "OFGen"
+    modelType = "OF+Conv3d"
+    numFeaturesInFirstLayer = 16
+    numNeuronsInDenseLayer = 128
     if modelType == "cnn-rnn":
         ## ------------------------ CNN-RNN ------------------------------ ##
         # Generators
@@ -438,8 +574,6 @@ def driver():
         convValGen = Conv3DGenerator(frameIdxList=frameIdxList, source_path=val_path, batch_size=batch_size,
                                      dataCSV=val_csv)
 
-        numFeaturesInFirstLayer = 16
-        numNeuronsInDenseLayer = 128
         conv3dModel = get_conv3d_model(numFeaturesInFirstLayer=numFeaturesInFirstLayer, numFrames=len(frameIdxList),
                                        numNeuronsInDenseLayer=numNeuronsInDenseLayer)
 
@@ -470,6 +604,75 @@ def driver():
                                       class_weight=None,
                                       initial_epoch=0,
                                       callbacks=callbacks_list)
+    elif modelType == "OFGen":
+        trainOFGen = OpticalFlowGenerator(frameIdxList=frameIdxList, batch_size=batch_size)
+
+        valOFGen = OpticalFlowGenerator(frameIdxList=frameIdxList, source_path=val_path, batch_size=batch_size,
+                                        dataCSV=val_csv)
+
+        input_shape = (width, height, 2)  # Based on flow output
+        conv3dModel = get_conv3d_model(numFeaturesInFirstLayer=numFeaturesInFirstLayer,
+                                       numFrames=(len(frameIdxList) - 1),
+                                       input_shape=input_shape, numNeuronsInDenseLayer=numNeuronsInDenseLayer)
+        callbacks_list = get_conv3d_callbacks()
+        testTrainedModel = True
+        if testTrainedModel:
+            loaded_model = models.load_model(
+                r"D:\PyCharm\Projects\GestureRecognition\conv3d_of\conv3d_init_2023-01-0213_04_57.758259\conv3d-00005-0.12532-0.96866-0.27041-0.93000.h5")
+
+            history = loaded_model.fit(trainOFGen,
+                                       steps_per_epoch=trainOFGen.getNumBatches(),
+                                       epochs=num_epochs,
+                                       verbose=1,
+                                       validation_data=valOFGen,
+                                       validation_steps=valOFGen.getNumBatches(),
+                                       workers=4,
+                                       class_weight=None,
+                                       initial_epoch=0,
+                                       callbacks=callbacks_list)
+
+        else:
+            history = conv3dModel.fit(trainOFGen,
+                                      steps_per_epoch=trainOFGen.getNumBatches(),
+                                      epochs=num_epochs,
+                                      verbose=1,
+                                      validation_data=valOFGen,
+                                      validation_steps=valOFGen.getNumBatches(),
+                                      workers=4,
+                                      class_weight=None,
+                                      initial_epoch=0,
+                                      callbacks=callbacks_list)
+    elif modelType == "OF+Conv3d":
+        # Get val generator for Conv3d
+        convValGen = Conv3DGenerator(frameIdxList=frameIdxList, source_path=val_path, batch_size=batch_size,
+                                     dataCSV=val_csv)
+        # Get val generator for OF-Conv3d. Use the same data_doc as above
+        valOFGen = OpticalFlowGenerator(frameIdxList=frameIdxList, source_path=val_path, batch_size=batch_size,
+                                        dataCSV=val_csv, useVectorList=True, vectorList=convValGen.vectorList)
+
+        ofModel = models.load_model(
+            r"D:\PyCharm\Projects\GestureRecognition\conv3d_of\conv3d_init_2023-01-0213_04_57.758259\conv3d-00005-0.12532-0.96866-0.27041-0.93000.h5")
+
+        conv3dModel = models.load_model(
+            r"D:\PyCharm\Projects\GestureRecognition\conv3d\conv3d_init_2023-01-0101_51_17.081632\conv3d-00017-0.07573-0.97761-0.68541-0.88000.h5")
+        noOfEqual = 0
+        totalNoOfIters = (valOFGen.numVideos / valOFGen.batch_size)
+        iter = 0
+        for ((convBatchData, convBatchLabels), (ofBatchData, ofBatchLabels)) in zip(convValGen, valOFGen):
+            # Conv3D model's pred
+            preds = conv3dModel.predict(convBatchData)
+
+            # OF model's pred
+            cPreds = ofModel.predict(ofBatchData)
+            final_predProbas = (cPreds + preds) / 2
+            final_pred = np.argmax(final_predProbas, axis=1)  # Max across each row
+            actualLabel = np.argmax(convBatchLabels, axis=1)
+            noOfEqual += sum([1 for pred, act in zip(final_pred, actualLabel) if pred == act])
+            iter += 1
+            if iter >= totalNoOfIters: break
+
+        accuracy = noOfEqual / valOFGen.numVideos
+        print("Accuracy: ", accuracy)
 
 
 if __name__ == "__main__":
