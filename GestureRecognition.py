@@ -20,30 +20,52 @@ from keras.callbacks import ModelCheckpoint, ReduceLROnPlateau
 from keras import optimizers
 
 
-class Generator(keras.utils.Sequence):
-    # Member variables
+"""
+- We are going to try different approaches to tackle this problem. 
+- All the approaches will require the data to be in a certain way. Therefore, we've opted to create an abstract base class, Generator.
+- Any generator we write will inherit from this class and they will implement the mandatory virtual functions for them to work.
 
+Will be writing the function of each method before the definition of the abstract class itself. 
+If there are any new methods needed for a child class, some comments will be present before its definition. 
+"""
+
+
+class Generator(keras.utils.Sequence):
     def __init__(self):
         pass
 
-    def initialize(self):
-        pass
-
+    """ Main logic to get one batch of data is implemented in this method.
+     @returns: (batch_data, batch_labels). 
+     The shape of batch_data depends on the type of generator getting used. 
+     Regardless, the first dimension will be batch_size.
+     batch_labels.shape = (batch_size, numClasses)
+    """
     def getBatchData(self, batch, currBatchSize):
         pass
 
+    # Since all variables are public, this is not really needed. But keeping it anyway.
+    # @return: Number of batches to run: depends on total number of videos/batch size
     def getNumBatches(self):
         pass
 
-    # Since we are inheriting from keras.utils.Sequence, we need to implement getitem, len
+    # Since we are inheriting from keras.utils.Sequence, we need to implement __getitem__ & __len__
+    # model.fit will call __getitem__ to get one batch of data. In our implementation, this acts like a wrapper around
+    # getBatchData above
     def __getitem__(self, batchIdx):
         pass
 
+    # Returns number of batches.
     def __len__(self):
         pass
 
 
-## ------------------------ Generator for CNN followed by RNN ----------------------------- ##
+"""
+Approach 1
+- So we use a pretrained CNN model like inception-v3 to extract features & then feed them to RNN. 
+- This is the generator for this purpose: CNNRNNGenerator
+"""
+
+
 class CNNRNNGenerator(Generator):
     def __init__(self,
                  frameIdxList,
@@ -78,6 +100,7 @@ class CNNRNNGenerator(Generator):
         self.numChannels = 3
         self.featureExtractor = None
 
+    # Build the feature extractor(inception-v3 in our case
     def __build_feature_extractor(self, preTrainedModel="inceptionv3"):
         featureExtractor = None
         if preTrainedModel == "inceptionv3":
@@ -96,7 +119,7 @@ class CNNRNNGenerator(Generator):
             preprocessed = preprocess_input(inputs)
             outputs = featureExtractor(preprocessed)
             return keras.Model(inputs, outputs, name="feature_extractor")
-        # Try other feature extractors
+        # Try other feature extractors, if needed
         elif preTrainedModel == "vgg16":
             pass
         else:
@@ -105,10 +128,8 @@ class CNNRNNGenerator(Generator):
     def getNumBatches(self):
         return self.numBatches
 
+    # Since we are using inception-v3 to extract features, we'll initialize it with this method
     def initializeFeatureExtractor(self, preTrainedModel="inceptionv3"):
-        np.random.seed(30)
-        rn.seed(30)
-        tf.random.set_seed(30)
         self.featureExtractor = self.__build_feature_extractor(preTrainedModel)
 
     def getBatchData(self, batch, currBatchSize):
@@ -165,7 +186,9 @@ class CNNRNNGenerator(Generator):
         batch_data, batch_labels = self.getBatchData(batchIdx, currBatchSize)
         return batch_data, batch_labels
 
-    # Keeping this for debugging purposes. Not really needed, was used to test next(generator)
+    """ Keeping this for debugging purposes. Not really needed for the functioning of our code.
+        We used it to test generator with next(generator).
+    """
     def __next__(self):
         batch_data = None
         batch_labels = None
@@ -177,6 +200,14 @@ class CNNRNNGenerator(Generator):
             self.currBatchIdx = 0
             batch_data, batch_labels = self.__getitem__(self.currBatchIdx)
         return batch_data, batch_labels
+
+
+"""
+Approach 2
+- Here we create a custom Conv3D network.
+- The input to this network will be the images itself.
+Generator:Conv3DGenerator
+"""
 
 
 class Conv3DGenerator(Generator):
@@ -263,7 +294,9 @@ class Conv3DGenerator(Generator):
         batch_data, batch_labels = self.getBatchData(batchIdx, currBatchSize)
         return batch_data, batch_labels
 
-    # Keeping this for debugging purposes. Not really needed, was used to test next(generator)
+    """ Keeping this for debugging purposes. Not really needed for the functioning of our code.
+            We used it to test generator with next(generator).
+        """
     def __next__(self):
         batch_data = None
         batch_labels = None
@@ -275,6 +308,18 @@ class Conv3DGenerator(Generator):
             self.currBatchIdx = 0
             batch_data, batch_labels = self.__getitem__(self.currBatchIdx)
         return batch_data, batch_labels
+
+
+"""
+Approach 2
+- Here we create a custom Conv3D network like the Conv3DGenerator, only difference being the input is not the images, rather 
+  we obtain a dense optical flow output of the images and feed that to a Conv3D network to predict the classes
+Generator:OpticalFlowGenerator
+"""
+
+# The constructor differs slighly from the generators' constructor:
+# We can use an existing vector list(which has already been shuffled). In such scenarios, we provide two more arguments:
+# useVectorList(a boolean) and the actual vectorList to be used.
 
 
 class OpticalFlowGenerator(Generator):
@@ -318,22 +363,14 @@ class OpticalFlowGenerator(Generator):
     def __len__(self):
         return self.numBatches
 
-    def draw_flow(self, img, flow, step=16):
-        h, w = img.shape[:2]
-        y, x = np.mgrid[step / 2:h:step, step / 2:w:step].reshape(2, -1).astype(int)
-        fx, fy = flow[y, x].T
-
-        lines = np.vstack([x, y, x - fx, y - fy]).T.reshape(-1, 2, 2)
-        lines = np.int32(lines + 0.5)
-
-        img_bgr = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
-        cv2.polylines(img_bgr, lines, 0, (0, 255, 0))
-
-        for (x1, y1), (_x2, _y2) in lines:
-            cv2.circle(img_bgr, (x1, y1), 1, (0, 255, 0), -1)
-
-        return img_bgr
-
+    """
+    - Take current and next frame's absolute paths as input arguments.
+    - imread the frames
+    - resize to desire size
+    - convert to gray(since OF only needs luma component)
+    - Get dense OF output using Gunnar Farneback's method
+    - Return OF output
+    """
     def getOFOutput(self, currFramePath, nextFramePath):
         # Read images
         currFrame = cv2.imread(currFramePath)
@@ -485,7 +522,12 @@ def get_conv3d_model(numFeaturesInFirstLayer, numFrames, input_shape, output_act
 
 def get_conv3d_callbacks():
     curr_dt_time = datetime.datetime.now()
+    # for OF:
     model_name = r"conv3d_of\conv3d_init" + '_' + str(curr_dt_time).replace(' ', '').replace(':', '_') + '\\'
+    # For conv3d
+    # model_name = r"conv3d_of\conv3d_init" + '_' + str(curr_dt_time).replace(' ', '').replace(':', '_') + '\\'
+    # For cnnrnn
+    # model_name = r"cnnrnn\conv3d_init" + '_' + str(curr_dt_time).replace(' ', '').replace(':', '_') + '\\'
     currDir = os.getcwd()
     if not os.path.exists(currDir + "\\" + "conv3d_of"):
         os.mkdir(currDir + "\\" + "conv3d_of")
@@ -506,15 +548,21 @@ def get_conv3d_callbacks():
 
 
 ## -- Conv3d done -- ##
+def initializeSeeds():
+    np.random.seed(30)
+    rn.seed(30)
+    tf.random.set_seed(30)
+
 
 def driver():
+    initializeSeeds()
+
     # Some constants
     frameIdxList = list(range(0, 30))
     width = 224
     height = 224
     numChannels = 3
     nClasses = 5
-    output_activation = "softmax"
     batch_size = 10
     num_epochs = 10
 
@@ -527,6 +575,8 @@ def driver():
     modelType = "OF+Conv3d"
     numFeaturesInFirstLayer = 16
     numNeuronsInDenseLayer = 128
+
+    # Switch case based on the type of the approach you want to run.
     if modelType == "cnn-rnn":
         ## ------------------------ CNN-RNN ------------------------------ ##
         # Generators
@@ -643,6 +693,12 @@ def driver():
                                       initial_epoch=0,
                                       callbacks=callbacks_list)
     elif modelType == "OF+Conv3d":
+        """
+        - Based on the paper: https://arxiv.org/abs/1705.07750, we take two models: Conv3d and OF->Conv3d and cache their predictions
+        - Then we average them to obtain a new result. 
+        - The added complexity gives a 1% boost in accuracy. 
+        - With our implementation, may not be entirely worth it. But with some tweaks and changes, it can probably yield better results
+        """
         # Get val generator for Conv3d
         convValGen = Conv3DGenerator(frameIdxList=frameIdxList, source_path=val_path, batch_size=batch_size,
                                      dataCSV=val_csv)
@@ -655,22 +711,33 @@ def driver():
 
         conv3dModel = models.load_model(
             r"D:\PyCharm\Projects\GestureRecognition\conv3d\conv3d_init_2023-01-0101_51_17.081632\conv3d-00017-0.07573-0.97761-0.68541-0.88000.h5")
+
+        # Logic for consolidating the results of the two models
         noOfEqual = 0
         totalNoOfIters = (valOFGen.numVideos / valOFGen.batch_size)
         iter = 0
         for ((convBatchData, convBatchLabels), (ofBatchData, ofBatchLabels)) in zip(convValGen, valOFGen):
             # Conv3D model's pred
-            preds = conv3dModel.predict(convBatchData)
+            conv3dPreds = conv3dModel.predict(convBatchData)
 
             # OF model's pred
-            cPreds = ofModel.predict(ofBatchData)
-            final_predProbas = (cPreds + preds) / 2
+            ofModelPreds = ofModel.predict(ofBatchData)
+
+            # Averaging the two
+            final_predProbas = (ofModelPreds + conv3dPreds) / 2
+
+            # Obtaining predictions with argmax
             final_pred = np.argmax(final_predProbas, axis=1)  # Max across each row
+
+            # Obtain acutal label
             actualLabel = np.argmax(convBatchLabels, axis=1)
+
+            # For calculating accuracy:
             noOfEqual += sum([1 for pred, act in zip(final_pred, actualLabel) if pred == act])
             iter += 1
             if iter >= totalNoOfIters: break
 
+        # Print accuracy.
         accuracy = noOfEqual / valOFGen.numVideos
         print("Accuracy: ", accuracy)
 
